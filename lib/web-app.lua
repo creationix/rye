@@ -6,7 +6,7 @@ local digest = require('openssl').digest.digest
 local date = require('os').date
 
 local compileRoute = require('./compile-route')
-local server = "Rye " .. require('../package').version
+local server = "Rye-Web " .. require('../package').version
 
 local routes = {}
 
@@ -16,7 +16,8 @@ local function handleRequest(req)
     req.method = "GET"
     isHead = true
   end
-  local res, body
+  local res = {}
+  local body
   local out = {}
   for i = 1, #routes do
     local route = routes[i]
@@ -33,18 +34,10 @@ local function handleRequest(req)
       end
     end
   end
-  res = {
-    {"Server", server},
-    {"Date", date("!%a, %d %b %Y %H:%M:%S GMT")},
-  }
-  if req.keepAlive then
-    res[#res + 1] = {"Connection", "Keep-Alive"}
-  end
 
   if #out == 0 then
     res.code = 404
     body = "Not Found\n"
-    res[#res + 1] = {"Content-Length", #body}
   else
     local i = 1
     if type(out[i]) == "number" then
@@ -60,8 +53,58 @@ local function handleRequest(req)
     end
     if type(out[i]) == "string" then
       body = out[i]
-      res[#res + 1] = {"Content-Length", #body}
     end
+  end
+
+  local lower = {}
+  for i = 1, #res do
+    local key, value = unpack(res[i])
+    lower[key:lower()] = value
+  end
+  if not lower.server then
+    res[#res + 1] = {"Server", server}
+  end
+  if not lower.date then
+    res[#res + 1] = {"Date", date("!%a, %d %b %Y %H:%M:%S GMT")}
+  end
+  if not lower.connection then
+    if req.keepAlive then
+      res[#res + 1] = {"Connection", "Keep-Alive"}
+    else
+      res[#res + 1] = {"Connection", "Close"}
+    end
+  end
+  if body then
+    local needLength = not lower["content-length"] and not lower["transfer-encoding"]
+    if type(body) == "string" then
+      if needLength then
+        res[#res + 1] = {"Content-Length", #body}
+      end
+      if not lower.etag then
+        local etag = '"' .. digest("sha1", body) .. '"'
+        lower.etag = etag
+        res[#res + 1] = {"ETag", etag}
+      end
+    else
+      if needLength then
+        res[#res + 1] = {"Transfer-Encoding", "chunked"}
+      end
+    end
+    if not lower["content-type"] then
+      res[#res + 1] = {"Content-Type", "text/plain"}
+    end
+  end
+
+  local headers = {}
+  for i = 1, #req do
+    local key, value = unpack(req[i])
+    headers[key:lower()] = value
+  end
+
+  local etag = headers["if-none-match"]
+  if etag and res.code >= 200 and res.code < 300 and etag == lower.etag then
+    res.code = 304
+    body = nil
   end
 
   if isHead then body = nil end
