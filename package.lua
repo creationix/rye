@@ -10,7 +10,4 @@ return {
     "creationix/pretty-print@0.1.0",
     "luvit/http-codec@0.1.0",
   },
-  files = {
-    "!rye"
-  }
 }
