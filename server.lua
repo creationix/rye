@@ -16,9 +16,9 @@ end)
   return 204
 end)
 
-.use(function (req, code, headers, body)
+.use(function (req, res)
   -- This can be a generic middleware plugin
-  p{req=req,code=code,headers=headers,body=body}
+  p(req)
 end)
 
 .listen("0.0.0.0", 8080)

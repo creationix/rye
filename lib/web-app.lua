@@ -29,7 +29,7 @@ local function handleRequest(req)
           if #out > 0 then break end
         end
       else
-        out = {route.handler()}
+        out = {route.handler(req)}
         if #out > 0 then break end
       end
     end
@@ -69,11 +69,13 @@ local function handleRequest(req)
   end
   if not lower.connection then
     if req.keepAlive then
+      lower.connection = "Keep-Alive"
       res[#res + 1] = {"Connection", "Keep-Alive"}
     else
       res[#res + 1] = {"Connection", "Close"}
     end
   end
+  res.keepAlive = lower.connection:lower() == "keep-alive"
   if body then
     local needLength = not lower["content-length"] and not lower["transfer-encoding"]
     if type(body) == "string" then
@@ -131,6 +133,9 @@ local function handleConnection(rawRead, rawWrite)
     local res, body = handleRequest(req)
     write(res)
     write(body)
+    if not (res.keepAlive and req.keepAlive) then
+      break
+    end
   end
   write()
 
