@@ -5,6 +5,7 @@ return {
     "luvit/require@0.2.1",
     "luvit/http-codec@0.1.3",
     "luvit/pretty-print@0.1.0",
+    "luvit/json@0.1.0",
     "creationix/git@0.1.0",
     "creationix/hex-bin@1.0.0",
     "creationix/coro-tcp@1.0.3",

@@ -30,15 +30,6 @@ local miniz = require('miniz')
 local openssl = require('openssl')
 local hexBin = require('hex-bin')
 
-local typeToNum = {
-  commit        = 1,
-  tree          = 2,
-  blob          = 3,
-  tag           = 4,
-  ["ofs-delta"] = 6,
-  ["ref-delta"] = 7,
-}
-
 local numToType = {
   [1] = "commit",
   [2] = "tree",
@@ -47,6 +38,116 @@ local numToType = {
   [6] = "ofs-delta",
   [7] = "ref-delta",
 }
+
+local function applyDelta(base, delta) --> raw
+  local deltaOffset = 0;
+
+  -- Read a variable length number our of delta and move the offset.
+  local function readLength()
+    deltaOffset = deltaOffset + 1
+    local byte = delta:byte(deltaOffset)
+    local length = bit.band(byte, 0x7f)
+    local shift = 7
+    while bit.band(byte, 0x80) > 0 do
+      deltaOffset = deltaOffset + 1
+      byte = delta:byte(deltaOffset)
+      length = bit.bor(length, bit.lshift(bit.band(byte, 0x7f), shift))
+      shift = shift + 7
+    end
+    return length
+  end
+
+  assert(#base == readLength(), "base length mismatch")
+
+  local outLength = readLength()
+  local parts = {}
+  while deltaOffset < #delta do
+    deltaOffset = deltaOffset + 1
+    local byte = delta:byte(deltaOffset)
+
+    if bit.band(byte, 0x80) > 0 then
+      -- Copy command. Tells us offset in base and length to copy.
+      local offset = 0
+      local length = 0
+      if bit.band(byte, 0x01) > 0 then
+        deltaOffset = deltaOffset + 1
+        offset = bit.bor(offset, delta:byte(deltaOffset))
+      end
+      if bit.band(byte, 0x02) > 0 then
+        deltaOffset = deltaOffset + 1
+        offset = bit.bor(offset, bit.lshift(delta:byte(deltaOffset), 8))
+      end
+      if bit.band(byte, 0x04) > 0 then
+        deltaOffset = deltaOffset + 1
+        offset = bit.bor(offset, bit.lshift(delta:byte(deltaOffset), 16))
+      end
+      if bit.band(byte, 0x08) > 0 then
+        deltaOffset = deltaOffset + 1
+        offset = bit.bor(offset, bit.lshift(delta:byte(deltaOffset), 24))
+      end
+      if bit.band(byte, 0x10) > 0 then
+        deltaOffset = deltaOffset + 1
+        length = bit.bor(length, delta:byte(deltaOffset))
+      end
+      if bit.band(byte, 0x20) > 0 then
+        deltaOffset = deltaOffset + 1
+        length = bit.bor(length, bit.lshift(delta:byte(deltaOffset), 8))
+      end
+      if bit.band(byte, 0x40) > 0 then
+        deltaOffset = deltaOffset + 1
+        length = bit.bor(length, bit.lshift(delta:byte(deltaOffset), 16))
+      end
+      if length == 0 then length = 0x10000 end
+      -- copy the data
+      parts[#parts + 1] = base:sub(offset + 1, offset + length)
+    elseif byte > 0 then
+      -- Insert command, opcode byte is length itself
+      parts[#parts + 1] = delta:sub(deltaOffset + 1, deltaOffset + byte)
+      deltaOffset = deltaOffset + byte
+    else
+      error("Invalid opcode in delta")
+    end
+  end
+  local out = table.concat(parts)
+  assert(#out == outLength, "final size mismatch in delta application")
+  return table.concat(parts)
+end
+
+local function readUint32(buffer, offset)
+  offset = offset or 0
+  return bit.bor(
+    bit.lshift(buffer:byte(offset + 1), 24),
+    bit.lshift(buffer:byte(offset + 2), 16),
+    bit.lshift(buffer:byte(offset + 3), 8),
+    buffer:byte(offset + 4)
+  )
+end
+
+local function readUint64(buffer, offset)
+  offset = offset or 0
+  local hi, lo =
+  bit.bor(
+    bit.lshift(buffer:byte(offset + 1), 24),
+    bit.lshift(buffer:byte(offset + 2), 16),
+    bit.lshift(buffer:byte(offset + 3), 8),
+    buffer:byte(offset + 4)
+  ),
+  bit.bor(
+    bit.lshift(buffer:byte(offset + 5), 24),
+    bit.lshift(buffer:byte(offset + 6), 16),
+    bit.lshift(buffer:byte(offset + 7), 8),
+    buffer:byte(offset + 8)
+  )
+  return hi * 0x100000000 + lo;
+end
+
+local function assertHash(hash)
+  assert(hash and #hash == 40 and hash:match("^%x+$"), "Invalid hash")
+end
+
+local function hashPath(hash)
+  return string.format("objects/%s/%s", hash:sub(1, 2), hash:sub(3))
+end
 
 return function (storage)
 
@@ -78,45 +179,9 @@ return function (storage)
 ]]))
   end
 
-  local function assertHash(hash)
-    assert(hash and #hash == 40 and hash:match("^%x+$"), "Invalid hash")
-  end
-
-  local function hashPath(hash)
-    return string.format("objects/%s/%s", hash:sub(1, 2), hash:sub(3))
-  end
-
   function db.has(hash)
     assertHash(hash)
     return storage.read(hashPath(hash)) and true or false
-  end
-
-  local function readUint32(buffer, offset)
-    offset = offset or 0
-    return bit.bor(
-      bit.lshift(buffer:byte(offset + 1), 24),
-      bit.lshift(buffer:byte(offset + 2), 16),
-      bit.lshift(buffer:byte(offset + 3), 8),
-      buffer:byte(offset + 4)
-    )
-  end
-
-  local function readUint64(buffer, offset)
-    offset = offset or 0
-    local hi, lo =
-    bit.bor(
-      bit.lshift(buffer:byte(offset + 1), 24),
-      bit.lshift(buffer:byte(offset + 2), 16),
-      bit.lshift(buffer:byte(offset + 3), 8),
-      buffer:byte(offset + 4)
-    ),
-    bit.bor(
-      bit.lshift(buffer:byte(offset + 5), 24),
-      bit.lshift(buffer:byte(offset + 6), 16),
-      bit.lshift(buffer:byte(offset + 7), 8),
-      buffer:byte(offset + 8)
-    )
-    return hi * 0x100000000 + lo;
   end
 
   local function findHash(indexHash, hash) --> offset
@@ -134,7 +199,6 @@ return function (storage)
       local crcOffset = hashOffset + 20 * length
       local lengthOffset = crcOffset + 4 * length
       local largeOffset = lengthOffset + 4 * length
-      -- local checkOffset = largeOffset
       for index = first, last do
         local start = hashOffset + index * 20
         local foundHash = binToHex(fs.read(fd, 20, start))
@@ -142,7 +206,6 @@ return function (storage)
           local offset = readUint32(fs.read(fd, 4, lengthOffset + index * 4))
           if bit.band(offset, 0x80000000) > 0 then
             offset = largeOffset + bit.band(offset, 0x7fffffff) * 8;
-            -- checkOffset = (checkOffset > offset + 8) and checkOffset or offset + 8
             offset = readUint64(fs.read(fd, 8, offset))
           end
           return offset
@@ -153,79 +216,6 @@ return function (storage)
     fs.close(fd)
     if success then return result end
     error(result)
-  end
-
-  local function applyDelta(base, delta) --> raw
-    local deltaOffset = 0;
-
-    -- Read a variable length number our of delta and move the offset.
-    local function readLength()
-      deltaOffset = deltaOffset + 1
-      local byte = delta:byte(deltaOffset)
-      local length = bit.band(byte, 0x7f)
-      local shift = 7
-      while bit.band(byte, 0x80) > 0 do
-        deltaOffset = deltaOffset + 1
-        byte = delta:byte(deltaOffset)
-        length = bit.bor(length, bit.lshift(bit.band(byte, 0x7f), shift))
-      end
-      return length
-    end
-
-    assert(#base == readLength(), "base length mismatch")
-
-    local outLength = readLength()
-    local parts = {}
-    while deltaOffset < #delta do
-      deltaOffset = deltaOffset + 1
-      local byte = delta:byte(deltaOffset)
-
-      if bit.band(byte, 0x80) > 0 then
-        -- Copy command. Tells us offset in base and length to copy.
-        local offset = 0
-        local length = 0
-        if bit.band(byte, 0x01) > 0 then
-          deltaOffset = deltaOffset + 1
-          offset = bit.bor(offset, delta:byte(deltaOffset))
-        end
-        if bit.band(byte, 0x02) > 0 then
-          deltaOffset = deltaOffset + 1
-          offset = bit.bor(offset, bit.lshift(delta:byte(deltaOffset), 8))
-        end
-        if bit.band(byte, 0x04) > 0 then
-          deltaOffset = deltaOffset + 1
-          offset = bit.bor(offset, bit.lshift(delta:byte(deltaOffset), 16))
-        end
-        if bit.band(byte, 0x08) > 0 then
-          deltaOffset = deltaOffset + 1
-          offset = bit.bor(offset, bit.lshift(delta:byte(deltaOffset), 24))
-        end
-        if bit.band(byte, 0x10) > 0 then
-          deltaOffset = deltaOffset + 1
-          length = bit.bor(length, delta:byte(deltaOffset))
-        end
-        if bit.band(byte, 0x20) > 0 then
-          deltaOffset = deltaOffset + 1
-          length = bit.bor(length, bit.lshift(delta:byte(deltaOffset), 8))
-        end
-        if bit.band(byte, 0x40) > 0 then
-          deltaOffset = deltaOffset + 1
-          length = bit.bor(length, bit.lshift(delta:byte(deltaOffset), 16))
-        end
-        if length == 0 then length = 0x10000 end
-        -- copy the data
-        parts[#parts + 1] = base:sub(offset + 1, offset + length)
-      elseif byte > 0 then
-        -- Insert command, opcode byte is length itself
-        parts[#parts + 1] = delta:sub(deltaOffset + 1, deltaOffset + byte)
-        deltaOffset = deltaOffset + byte
-      else
-        error("Invalid opcode in delta")
-      end
-    end
-    local out = table.concat(parts)
-    assert(#out == outLength, "final size mismatch in delta application")
-    return table.concat(parts)
   end
 
   local function loadPack(packHash, offset)
@@ -267,7 +257,6 @@ return function (storage)
           ref = bit.bor(bit.lshift(ref + 1, 7), bit.band(byte, 0x7f))
         end
       end
-      p{kind=kind,size=size,ref=ref}
 
       -- We don't know the size of the compressed data, so we guess uncompressed
       -- size + 32, extra data will be ignored

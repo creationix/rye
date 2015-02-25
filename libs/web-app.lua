@@ -10,7 +10,52 @@ local server = "Rye-Web " .. require('../package').version
 
 local routes = {}
 
+-- Provide a nice case insensitive reading interface to headers
+-- Also a nice way to add new headers
+local headerMeta = {
+  __index = function (list, name)
+    if type(name) ~= "string" then
+      return rawget(list, name)
+    end
+    name = name:lower()
+    for i = 1, #list do
+      local key, value = unpack(list[i])
+      if key:lower() == name then return value end
+    end
+  end,
+  __newindex = function (list, name, value)
+    if type(name) ~= "string" then
+      return rawset(list, name, value)
+    end
+    name = name:lower()
+    for i = 1, #list do
+      local key = list[i][1]
+      if key:lower() == name then
+        if value == nil then
+          table.remove(list, i)
+        else
+          list[i] = {name, value}
+        end
+        return
+      end
+    end
+    if value == nil then return end
+    list[#list + 1] = {name, value}
+  end,
+}
+
 local function handleRequest(req)
+  local headers = setmetatable({}, headerMeta)
+  for i = 1, #req do
+    headers[i] = req[i]
+  end
+  req = {
+    headers = headers,
+    method = req.method,
+    path = req.path,
+    version = req.version,
+    keepAlive = req.keepAlive
+  }
   local isHead = false
   if req.method == "HEAD" then
     req.method = "GET"
@@ -25,6 +70,7 @@ local function handleRequest(req)
       if route.path then
         local match = route.path(req.path)
         if match then
+          match[#match + 1] = req
           out = {route.handler(unpack(match))}
           if #out > 0 then break end
         end
@@ -97,12 +143,6 @@ local function handleRequest(req)
     end
   end
 
-  local headers = {}
-  for i = 1, #req do
-    local key, value = unpack(req[i])
-    headers[key:lower()] = value
-  end
-
   local etag = headers["if-none-match"]
   if etag and res.code >= 200 and res.code < 300 and etag == lower.etag then
     res.code = 304
@@ -143,6 +183,7 @@ end
 
 -- Create the public interface
 local app = {}
+app.headerMeta = headerMeta
 
 -- Make nice aliases for REST handlers
 local methods = "GET PUT POST DELETE"
