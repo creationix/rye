@@ -134,7 +134,7 @@ return function (storage)
       local crcOffset = hashOffset + 20 * length
       local lengthOffset = crcOffset + 4 * length
       local largeOffset = lengthOffset + 4 * length
-      local checkOffset = largeOffset
+      -- local checkOffset = largeOffset
       for index = first, last do
         local start = hashOffset + index * 20
         local foundHash = binToHex(fs.read(fd, 20, start))
@@ -142,7 +142,7 @@ return function (storage)
           local offset = readUint32(fs.read(fd, 4, lengthOffset + index * 4))
           if bit.band(offset, 0x80000000) > 0 then
             offset = largeOffset + bit.band(offset, 0x7fffffff) * 8;
-            checkOffset = (checkOffset > offset + 8) and checkOffset or offset + 8
+            -- checkOffset = (checkOffset > offset + 8) and checkOffset or offset + 8
             offset = readUint64(fs.read(fd, 8, offset))
           end
           return offset
@@ -259,15 +259,14 @@ return function (storage)
     local head = storage.read("HEAD")
     if not head then return end
     local ref = head:match("^ref: *([^\n]+)")
-    if not ref then return end
-    return db.getRef(ref)
+    return ref and db.getRef(ref)
   end
 
   function db.getRef(ref)
     local hash = storage.read(ref)
     if hash then return hash:match("%x+") end
     local refs = storage.read("packed-refs")
-    return refs:match("(%x+) " .. ref)
+    return refs and refs:match("(%x+) " .. ref)
   end
 
   function db.resolve(ref)
