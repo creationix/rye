@@ -30,6 +30,24 @@ local miniz = require('miniz')
 local openssl = require('openssl')
 local hexBin = require('hex-bin')
 
+local typeToNum = {
+  commit        = 1,
+  tree          = 2,
+  blob          = 3,
+  tag           = 4,
+  ["ofs-delta"] = 6,
+  ["ref-delta"] = 7,
+}
+
+local numToType = {
+  [1] = "commit",
+  [2] = "tree",
+  [3] = "blob",
+  [4] = "tag",
+  [5] = "ofs-delta",
+  [6] = "ref-delta",
+}
+
 return function (storage)
 
   local encoders = git.encoders
@@ -40,6 +58,7 @@ return function (storage)
   local inflate = miniz.inflate
   local digest = openssl.digest.digest
   local binToHex = hexBin.binToHex
+  local hexToBin = hexBin.hexToBin
 
   local db = { storage = storage }
   local fs = storage.fs
@@ -73,6 +92,7 @@ return function (storage)
   end
 
   local function readUint32(buffer, offset)
+    offset = offset or 0
     return bit.bor(
       bit.lshift(buffer:byte(offset + 1), 24),
       bit.lshift(buffer:byte(offset + 2), 16),
@@ -82,6 +102,7 @@ return function (storage)
   end
 
   local function readUint64(buffer, offset)
+    offset = offset or 0
     local hi, lo =
     bit.bor(
       bit.lshift(buffer:byte(offset + 1), 24),
@@ -98,39 +119,73 @@ return function (storage)
     return hi * 0x100000000 + lo;
   end
 
-  local indexes = {}
-  local function parseIndex(hash)
-    local parsed = indexes[hash]
-    if parsed then return parsed end
-    local data = storage.read("objects/pack/pack-" .. hash .. ".idx")
-    assert(data:sub(1, 8) == '\255tOc\0\0\0\2', "Only pack index v2 supported")
+  local function findHash(indexHash, hash) --> offset
+    local fd = assert(fs.open("objects/pack/pack-" .. indexHash .. ".idx"))
+    local success, result = xpcall(function ()
+      assert(fs.read(fd, 8, 0) == '\255tOc\0\0\0\2', "Only pack index v2 supported")
+      local length = readUint32((fs.read(fd, 4, 8 + 255 * 4)))
 
+      -- Read first fan-out table to get index into offset table
+      local prefix = hexToBin(hash:sub(1, 2)):byte(1)
+      local first = prefix == 0 and 0 or readUint32((fs.read(fd, 4, 8 + (prefix - 1) * 4)))
+      local last = readUint32((fs.read(fd, 4, 8 + prefix * 4)))
 
-    -- Get the number of hashes in index
-    -- This is the value of the last fan-out entry
-    local length = readUint32(data, 8 + 255 * 4)
-    local items = {}
-    indexes[hash] = items
-
-    local hashOffset = 8 + 255 * 4 + 4
-    local crcOffset = hashOffset + 20 * length
-    local lengthOffset = crcOffset + 4 * length
-    local largeOffset = lengthOffset + 4 * length
-    local checkOffset = largeOffset
-
-    for i = 1, length do
-      local start = hashOffset + i * 20
-      local hash = binToHex(data:sub(start + 1, start + 20))
-      local offset = readUint32(data, lengthOffset + i * 4);
-      if bit.band(offset, 0x80000000) > 0 then
-        offset = largeOffset + bit.band(offset, 0x7fffffff) * 8;
-        checkOffset = (checkOffset > offset + 8) and checkOffset or offset + 8
-        offset = readUint64(data, offset);
+      local hashOffset = 8 + 255 * 4 + 4
+      local crcOffset = hashOffset + 20 * length
+      local lengthOffset = crcOffset + 4 * length
+      local largeOffset = lengthOffset + 4 * length
+      local checkOffset = largeOffset
+      for index = first, last do
+        local start = hashOffset + index * 20
+        local foundHash = binToHex(fs.read(fd, 20, start))
+        if foundHash == hash then
+          local offset = readUint32(fs.read(fd, 4, lengthOffset + index * 4))
+          if bit.band(offset, 0x80000000) > 0 then
+            offset = largeOffset + bit.band(offset, 0x7fffffff) * 8;
+            checkOffset = (checkOffset > offset + 8) and checkOffset or offset + 8
+            offset = readUint64(fs.read(fd, 8, offset))
+          end
+          return offset
+        end
       end
-      items[hash] = offset
-    end
 
-    return items
+    end, debug.traceback)
+    fs.close(fd)
+    if success then return result end
+    error(result)
+  end
+
+  local function loadHash(packHash, hash)
+    local offset, err = findHash(packHash, hash)
+    if not offset then return nil, err end
+    local fd = assert(fs.open("objects/pack/pack-" .. packHash .. ".pack"))
+    local success, result = xpcall(function ()
+      assert(fs.read(fd, 8, 0) == "PACK\0\0\0\2", "Only v2 pack files supported")
+
+      -- Shouldn't need more than 16 bytes to read variable length header
+      local chunk = fs.read(fd, 16, offset)
+      local byte = chunk:byte(1)
+      local kind = numToType[bit.band(bit.rshift(byte, 4), 0x7)]
+      local size = bit.band(byte, 0xf)
+      local left = 4
+      local i = 2
+      while bit.band(byte, 0x80) > 0 do
+        byte = chunk:byte(i)
+        i = i + 1
+        size = bit.bor(size, bit.lshift(bit.band(byte, 0x7f), left))
+        left = left + 7
+      end
+      offset = offset + i - 1
+
+      -- We don't know the size of the compressed data, so we guess uncompressed
+      -- size + 32, extra data will be ignored
+      local compressed = fs.read(fd, size + 32, offset)
+      local raw = inflate(compressed, 1)
+      return frame(kind, raw)
+    end, debug.traceback)
+    fs.close(fd)
+    if success then return result end
+    error(result)
   end
 
   function db.load(hash)
@@ -141,10 +196,9 @@ return function (storage)
       for file in storage.leaves("objects/pack") do
         local packHash = file:match("^pack%-(%x+)%.idx$")
         if packHash then
-          local index = parseIndex(packHash)
-          local offset = index[hash]
-          if not offset then return end
-          p(hash, offset)
+          local raw
+          raw, err = loadHash(packHash, hash)
+          if raw then return raw end
         end
       end
       return nil, err
@@ -196,8 +250,6 @@ return function (storage)
       end
     end
   end
-
-
 
   function db.getHead()
     local head = storage.read("HEAD")
