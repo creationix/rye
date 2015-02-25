@@ -44,8 +44,8 @@ local numToType = {
   [2] = "tree",
   [3] = "blob",
   [4] = "tag",
-  [5] = "ofs-delta",
-  [6] = "ref-delta",
+  [6] = "ofs-delta",
+  [7] = "ref-delta",
 }
 
 return function (storage)
@@ -155,17 +155,93 @@ return function (storage)
     error(result)
   end
 
-  local function loadHash(packHash, hash)
-    local offset, err = findHash(packHash, hash)
-    if not offset then return nil, err end
+  local function applyDelta(base, delta) --> raw
+    local deltaOffset = 0;
+
+    -- Read a variable length number our of delta and move the offset.
+    local function readLength()
+      deltaOffset = deltaOffset + 1
+      local byte = delta:byte(deltaOffset)
+      local length = bit.band(byte, 0x7f)
+      local shift = 7
+      while bit.band(byte, 0x80) > 0 do
+        deltaOffset = deltaOffset + 1
+        byte = delta:byte(deltaOffset)
+        length = bit.bor(length, bit.lshift(bit.band(byte, 0x7f), shift))
+      end
+      return length
+    end
+
+    assert(#base == readLength(), "base length mismatch")
+
+    local outLength = readLength()
+    local parts = {}
+    while deltaOffset < #delta do
+      deltaOffset = deltaOffset + 1
+      local byte = delta:byte(deltaOffset)
+
+      if bit.band(byte, 0x80) > 0 then
+        -- Copy command. Tells us offset in base and length to copy.
+        local offset = 0
+        local length = 0
+        if bit.band(byte, 0x01) > 0 then
+          deltaOffset = deltaOffset + 1
+          offset = bit.bor(offset, delta:byte(deltaOffset))
+        end
+        if bit.band(byte, 0x02) > 0 then
+          deltaOffset = deltaOffset + 1
+          offset = bit.bor(offset, bit.lshift(delta:byte(deltaOffset), 8))
+        end
+        if bit.band(byte, 0x04) > 0 then
+          deltaOffset = deltaOffset + 1
+          offset = bit.bor(offset, bit.lshift(delta:byte(deltaOffset), 16))
+        end
+        if bit.band(byte, 0x08) > 0 then
+          deltaOffset = deltaOffset + 1
+          offset = bit.bor(offset, bit.lshift(delta:byte(deltaOffset), 24))
+        end
+        if bit.band(byte, 0x10) > 0 then
+          deltaOffset = deltaOffset + 1
+          length = bit.bor(length, delta:byte(deltaOffset))
+        end
+        if bit.band(byte, 0x20) > 0 then
+          deltaOffset = deltaOffset + 1
+          length = bit.bor(length, bit.lshift(delta:byte(deltaOffset), 8))
+        end
+        if bit.band(byte, 0x40) > 0 then
+          deltaOffset = deltaOffset + 1
+          length = bit.bor(length, bit.lshift(delta:byte(deltaOffset), 16))
+        end
+        if length == 0 then length = 0x10000 end
+        -- copy the data
+        parts[#parts + 1] = base:sub(offset + 1, offset + length)
+      elseif byte > 0 then
+        -- Insert command, opcode byte is length itself
+        parts[#parts + 1] = delta:sub(deltaOffset + 1, deltaOffset + byte)
+        deltaOffset = deltaOffset + byte
+      else
+        error("Invalid opcode in delta")
+      end
+    end
+    local out = table.concat(parts)
+    assert(#out == outLength, "final size mismatch in delta application")
+    return table.concat(parts)
+  end
+
+  local function loadPack(packHash, offset)
     local fd = assert(fs.open("objects/pack/pack-" .. packHash .. ".pack"))
-    local success, result = xpcall(function ()
+    local success, kind, raw = xpcall(function ()
       assert(fs.read(fd, 8, 0) == "PACK\0\0\0\2", "Only v2 pack files supported")
 
-      -- Shouldn't need more than 16 bytes to read variable length header
-      local chunk = fs.read(fd, 16, offset)
+      -- Shouldn't need more than 32 bytes to read variable length header and
+      -- optional hash or offset
+      local chunk = fs.read(fd, 32, offset)
       local byte = chunk:byte(1)
+
+      -- Parse out the git type
       local kind = numToType[bit.band(bit.rshift(byte, 4), 0x7)]
+
+      -- Parse out the uncompressed length
       local size = bit.band(byte, 0xf)
       local left = 4
       local i = 2
@@ -175,21 +251,49 @@ return function (storage)
         size = bit.bor(size, bit.lshift(bit.band(byte, 0x7f), left))
         left = left + 7
       end
-      offset = offset + i - 1
+
+      -- Optionally parse out the hash or offset for deltas
+      local ref
+      if kind == "ref-delta" then
+        ref = binToHex(chunk:sub(i + 1, i + 20))
+        i = i + 20
+      elseif kind == "ofs-delta" then
+        local byte = chunk:byte(i)
+        i = i + 1
+        ref = bit.band(byte, 0x7f)
+        while bit.band(byte, 0x80) > 0 do
+          byte = chunk:byte(i)
+          i = i + 1
+          ref = bit.bor(bit.lshift(ref + 1, 7), bit.band(byte, 0x7f))
+        end
+      end
+      p{kind=kind,size=size,ref=ref}
 
       -- We don't know the size of the compressed data, so we guess uncompressed
       -- size + 32, extra data will be ignored
-      local compressed = fs.read(fd, size + 32, offset)
+      local compressed = fs.read(fd, size + 32, offset + i - 1)
       local raw = inflate(compressed, 1)
 
-      if kind == "ofs-delta" or kind == "ref-delta" then
-        error("TODO: handle deltas")
+      assert(#raw == size, "inflate error or size mismatch")
+
+      if kind == "ref-delta" then
+        error("TODO: handle ref-delta")
+      elseif kind == "ofs-delta" then
+        local base
+        kind, base = loadPack(packHash, offset - ref)
+        raw = applyDelta(base, raw)
       end
-      return frame(kind, raw)
+      return kind, raw
     end, debug.traceback)
     fs.close(fd)
-    if success then return result end
-    error(result)
+    if success then return kind, raw end
+    error(kind)
+  end
+
+  local function loadHash(packHash, hash)
+    local offset, err = findHash(packHash, hash)
+    if not offset then return nil, err end
+    return frame(loadPack(packHash, offset))
   end
 
   function db.load(hash)

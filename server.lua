@@ -6,7 +6,9 @@ coroutine.wrap(function ()
     )
   )
 
-  p(db.loadAny("HEAD"))
+  local commit = db.loadAs("commit", "HEAD")
+  local tree = db.loadAs("tree", commit.tree)
+  p(tree)
 end)()
 
 -- local people = {
