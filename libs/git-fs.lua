@@ -181,6 +181,10 @@ return function (storage)
       -- size + 32, extra data will be ignored
       local compressed = fs.read(fd, size + 32, offset)
       local raw = inflate(compressed, 1)
+
+      if kind == "ofs-delta" or kind == "ref-delta" then
+        error("TODO: handle deltas")
+      end
       return frame(kind, raw)
     end, debug.traceback)
     fs.close(fd)
