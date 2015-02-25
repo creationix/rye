@@ -3,6 +3,15 @@ local people = {
   jack = 8,
 }
 
+coroutine.wrap(function ()
+  local db = require('git-fs')(
+    require('storage-fs')(
+      require('coro-fs').chroot('testdb.git')
+    )
+  )
+  p(db)
+end)()
+
 require('web-app')
 
 .get("/:name", function (name)
