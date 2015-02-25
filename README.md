@@ -12,6 +12,7 @@ So far it can render static sites directly from git repos on disk.
  3. [Install lit](https://github.com/luvit/lit#installing-lit).
  4. Install deps using lit.
  5. Run the program using lit.
+ 6. Open the test page in a browser.
 
 ```sh
 git clone https://github.com/creationix/rye.git
