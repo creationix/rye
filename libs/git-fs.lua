@@ -82,16 +82,20 @@ return function (storage)
   end
 
   local function readUint64(buffer, offset)
-    return bit.bor(
-      bit.lshift(buffer:byte(offset + 1), 56),
-      bit.lshift(buffer:byte(offset + 2), 48),
-      bit.lshift(buffer:byte(offset + 3), 40),
-      bit.lshift(buffer:byte(offset + 4), 32),
+    local hi, lo =
+    bit.bor(
+      bit.lshift(buffer:byte(offset + 1), 24),
+      bit.lshift(buffer:byte(offset + 2), 16),
+      bit.lshift(buffer:byte(offset + 3), 8),
+      buffer:byte(offset + 4)
+    ),
+    bit.bor(
       bit.lshift(buffer:byte(offset + 5), 24),
       bit.lshift(buffer:byte(offset + 6), 16),
       bit.lshift(buffer:byte(offset + 7), 8),
       buffer:byte(offset + 8)
     )
+    return hi * 0x100000000 + lo;
   end
 
   local indexes = {}
