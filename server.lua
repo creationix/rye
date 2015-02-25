@@ -29,14 +29,14 @@ require('web-app')
   end)
 
   -- Mount the git app on three virtual hosts
-  .route({ method = "GET", host = "^luvit.localdomain", path = "/:path:" }, luvitApp)
-  .route({ method = "GET", host = "^exploder.localdomain", path = "/:path:" }, exploderApp)
-  .route({ method = "GET", host = "^creationix.localdomain", path = "/:path:" }, creationixApp)
+  .route({ method="GET", path="/:path:", host="^luvit.localdomain" }, luvitApp)
+  .route({ method="GET", path="/:path:", host="^exploder.localdomain" }, exploderApp)
+  .route({ method="GET", path="/:path:", host="^creationix.localdomain" }, creationixApp)
 
   -- Mount them again, but on subpaths instead of virtual hosts
-  .route({ method = "GET", path = "/luvit/:path:" }, luvitApp)
-  .route({ method = "GET", path = "/exploder/:path:" }, exploderApp)
-  .route({ method = "GET", path = "/creationix/:path:" }, creationixApp)
+  .route({ method="GET", path="/luvit/:path:" }, luvitApp)
+  .route({ method="GET", path="/exploder/:path:" }, exploderApp)
+  .route({ method="GET", path="/creationix/:path:" }, creationixApp)
 
   -- Bind the ports, start the server and begin listening for and accepting connections.
   .start()
