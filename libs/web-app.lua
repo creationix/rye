@@ -5,7 +5,7 @@ local httpCodec = require('http-codec')
 local digest = require('openssl').digest.digest
 local date = require('os').date
 
-local compileRoute = require('./compile-route')
+local compileRoute = require('compile-route')
 local server = "Rye-Web " .. require('../package').version
 
 local routes = {}

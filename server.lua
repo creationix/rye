@@ -3,7 +3,7 @@ local people = {
   jack = 8,
 }
 
-require('./lib/web-app')
+require('web-app')
 
 .get("/:name", function (name)
   local age = people[name]
