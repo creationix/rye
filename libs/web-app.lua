@@ -39,11 +39,11 @@ Response automatic values:
 
 
 server
-  .listen({
+  .bind({
     host = "0.0.0.0"
     port = 8080
   })
-  .listen({
+  .bind({
     host = "0.0.0.0",
     port = 8443,
     tls = true
@@ -67,7 +67,7 @@ local compileRoute = require('compile-route')
 
 local server = {}
 local handlers = {}
-local listeners = {}
+local bindings = {}
 
 -- Provide a nice case insensitive interface to headers.
 local headerMeta = {
@@ -228,8 +228,8 @@ local function handleConnection(rawRead, rawWrite)
 
 end
 
-function server.listen(options)
-  listeners[#listeners + 1] = options
+function server.bind(options)
+  bindings[#bindings + 1] = options
   return server
 end
 
@@ -257,8 +257,8 @@ function server.route(options, handler)
 end
 
 function server.start()
-  for i = 1, #listeners do
-    local options = listeners[i]
+  for i = 1, #bindings do
+    local options = bindings[i]
     -- TODO: handle options.tls
     createServer(options.host, options.port, handleConnection)
     print("HTTP server listening at http://" .. options.host .. ":" .. options.port .. "/")
