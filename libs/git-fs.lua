@@ -1,6 +1,9 @@
 exports.name = "creationix/git-fs"
 exports.version = "0.1.0"
-exports.dependencies = { "creationix/git@0.1.0" }
+exports.dependencies = {
+  "creationix/git@0.1.0",
+  "creationix/hex-bin@1.0.0",
+}
 
 --[[
 
@@ -16,11 +19,16 @@ db.loadAs(kind, hash) -> value         - pre-decode and check type or error
 db.save(raw) -> hash                   - save pre-encoded and framed data
 db.saveAs(kind, value) -> hash         - encode, frame and save to objects/$ha/$sh
 db.hashes() -> iter                    - Iterate over all hashes
+
+db.getHead() -> hash                   - Read the hash via HEAD
+db.getRef(ref) -> hash                 - Read hash of a ref
+db.resolve(ref) -> hash                - Given a hash, tag, branch, or HEAD, return the hash
 ]]
 
 local git = require('git')
 local miniz = require('miniz')
 local openssl = require('openssl')
+local hexBin = require('hex-bin')
 
 return function (storage)
 
@@ -31,6 +39,7 @@ return function (storage)
   local deflate = miniz.deflate
   local inflate = miniz.inflate
   local digest = openssl.digest.digest
+  local binToHex = hexBin.binToHex
 
   local db = { storage = storage }
   local fs = storage.fs
@@ -63,10 +72,79 @@ return function (storage)
     return storage.read(hashPath(hash)) and true or false
   end
 
+  local function readUint32(buffer, offset)
+    return bit.bor(
+      bit.lshift(buffer:byte(offset + 1), 24),
+      bit.lshift(buffer:byte(offset + 2), 16),
+      bit.lshift(buffer:byte(offset + 3), 8),
+      buffer:byte(offset + 4)
+    )
+  end
+
+  local function readUint64(buffer, offset)
+    return bit.bor(
+      bit.lshift(buffer:byte(offset + 1), 56),
+      bit.lshift(buffer:byte(offset + 2), 48),
+      bit.lshift(buffer:byte(offset + 3), 40),
+      bit.lshift(buffer:byte(offset + 4), 32),
+      bit.lshift(buffer:byte(offset + 5), 24),
+      bit.lshift(buffer:byte(offset + 6), 16),
+      bit.lshift(buffer:byte(offset + 7), 8),
+      buffer:byte(offset + 8)
+    )
+  end
+
+  local indexes = {}
+  local function parseIndex(hash)
+    local parsed = indexes[hash]
+    if parsed then return parsed end
+    local data = storage.read("objects/pack/pack-" .. hash .. ".idx")
+    assert(data:sub(1, 8) == '\255tOc\0\0\0\2', "Only pack index v2 supported")
+
+
+    -- Get the number of hashes in index
+    -- This is the value of the last fan-out entry
+    local length = readUint32(data, 8 + 255 * 4)
+    local items = {}
+    indexes[hash] = items
+
+    local hashOffset = 8 + 255 * 4 + 4
+    local crcOffset = hashOffset + 20 * length
+    local lengthOffset = crcOffset + 4 * length
+    local largeOffset = lengthOffset + 4 * length
+    local checkOffset = largeOffset
+
+    for i = 1, length do
+      local start = hashOffset + i * 20
+      local hash = binToHex(data:sub(start + 1, start + 20))
+      local offset = readUint32(data, lengthOffset + i * 4);
+      if bit.band(offset, 0x80000000) > 0 then
+        offset = largeOffset + bit.band(offset, 0x7fffffff) * 8;
+        checkOffset = (checkOffset > offset + 8) and checkOffset or offset + 8
+        offset = readUint64(data, offset);
+      end
+      items[hash] = offset
+    end
+
+    return items
+  end
+
   function db.load(hash)
+    hash = db.resolve(hash)
     assertHash(hash)
     local compressed, err = storage.read(hashPath(hash))
-    if not compressed then return nil, err end
+    if not compressed then
+      for file in storage.leaves("objects/pack") do
+        local packHash = file:match("^pack%-(%x+)%.idx$")
+        if packHash then
+          local index = parseIndex(packHash)
+          local offset = index[hash]
+          if not offset then return end
+          p(hash, offset)
+        end
+      end
+      return nil, err
+    end
     return inflate(compressed, 1)
   end
 
@@ -113,6 +191,32 @@ return function (storage)
         iter = storage.leaves("objects/" .. prefix)
       end
     end
+  end
+
+
+
+  function db.getHead()
+    local head = storage.read("HEAD")
+    if not head then return end
+    local ref = head:match("^ref: *([^\n]+)")
+    if not ref then return end
+    return db.getRef(ref)
+  end
+
+  function db.getRef(ref)
+    local hash = storage.read(ref)
+    if hash then return hash:match("%x+") end
+    local refs = storage.read("packed-refs")
+    return refs:match("(%x+) " .. ref)
+  end
+
+  function db.resolve(ref)
+    if ref == "HEAD" then return db.getHead() end
+    local hash = ref:match("^%x+$")
+    if hash and #hash == 40 then return hash end
+    return db.getRef(ref)
+        or db.getRef("refs/heads/" .. ref)
+        or db.getRef("refs/tags/" .. ref)
   end
 
   return db
