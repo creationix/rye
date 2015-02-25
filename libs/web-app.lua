@@ -250,7 +250,7 @@ function server.route(options, handler)
       params = path(req.path)
       if not params then return go() end
     end
-    req.params = params
+    req.params = params or {}
     return handler(req, res, go)
   end
   return server

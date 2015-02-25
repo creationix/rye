@@ -9,7 +9,7 @@ local getType = require('mime').getType
 return function (db, ref)
   return function (req, res, go)
     local commitHash = db.resolve(ref)
-    local path = req.params.path
+    local path = req.params.path or req.path
     local fullPath = commitHash .. ":" .. path
     local etag = '"dir-' .. digest("sha1", fullPath) .. '"'
     if etag == req.headers["if-none-match"] then

@@ -24,14 +24,16 @@ require('web-app')
 
   -- Set an outer middleware for logging requests and responses
   .use(function (req, res, go)
+    -- Run all inner layers first.
     go()
+    -- And then log after everything is done
     print(string.format("%s %s %s %s", req.method,  req.path, req.headers["User-Agent"], res.code))
   end)
 
   -- Mount the git app on three virtual hosts
-  .route({ method="GET", path="/:path:", host="^luvit.localdomain" }, luvitApp)
-  .route({ method="GET", path="/:path:", host="^exploder.localdomain" }, exploderApp)
-  .route({ method="GET", path="/:path:", host="^creationix.localdomain" }, creationixApp)
+  .route({ method="GET", host="^luvit.localdomain" }, luvitApp)
+  .route({ method="GET", host="^exploder.localdomain" }, exploderApp)
+  .route({ method="GET", host="^creationix.localdomain" }, creationixApp)
 
   -- Mount them again, but on subpaths instead of virtual hosts
   .route({ method="GET", path="/luvit/:path:" }, luvitApp)
