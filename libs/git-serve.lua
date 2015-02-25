@@ -4,35 +4,37 @@ local modes = git.modes
 local listToMap = git.listToMap
 local JSON = require('json')
 local getType = require('mime').getType
-local headerMeta = require('web-app').headerMeta
 
 
 return function (db, ref)
-  return function (path, req)
+  return function (req, res, go)
     local commitHash = db.resolve(ref)
+    local path = req.params.path
     local fullPath = commitHash .. ":" .. path
     local etag = '"dir-' .. digest("sha1", fullPath) .. '"'
-    local headers = setmetatable({}, headerMeta)
-    headers.Etag = etag
     if etag == req.headers["if-none-match"] then
-      return 304, headers
+      res.code = 304
+      res.headers.Etag = etag
+      return
     end
     local hash = db.loadAs("commit", commitHash).tree
     for part in path:gmatch("[^/]+") do
       local tree = listToMap(db.loadAs("tree", hash))
       local entry = tree[part]
       if entry.mode == modes.commit then
-        return nil, "Submodules not implemented yet"
+        error("Submodules not implemented yet")
       end
-      if not entry then return end
+      if not entry then return go() end
       hash = entry.hash
     end
-    if not hash then return end
+    if not hash then return go() end
 
     local function render(kind, value)
       if kind == "tree" then
         if req.path:sub(-1) ~= "/" then
-          return 301, {{"Location", req.path .. "/"}}
+          res.code = 301
+          res.headers.Location = req.path .. "/"
+          return
         end
         for i = 1, #value do
           local entry = value[i]
@@ -47,13 +49,17 @@ return function (db, ref)
             value[i].url = url
           end
         end
-        headers["Content-Type"] = "application/json"
-        local body = JSON.stringify(value) .. "\n"
-
-        return 200, headers, body
+        res.code = 200
+        res.headers["Content-Type"] = "application/json"
+        res.body = JSON.stringify(value) .. "\n"
+        return
       elseif kind == "blob" then
-        headers["Content-Type"] = getType(path)
-        return 200, headers, value
+        res.code = 200
+        res.headers["Content-Type"] = getType(path)
+        res.body = value
+        return
+      else
+        error("Unsupported kind: " .. kind)
       end
     end
     return render(db.loadAny(hash))
