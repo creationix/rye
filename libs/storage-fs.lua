@@ -19,9 +19,8 @@ storage.leaves(path) -> iter - Iterate over node children of path
 
 return function (fs)
 
-
-
   local storage = { fs = fs }
+
 
   local function dirname(path)
     return path:match("^(.*)/") or ""

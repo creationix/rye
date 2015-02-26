@@ -186,7 +186,7 @@ local function handleRequest(head, input)
   end
 
   local function run(i)
-    local success, err = xpcall(function ()
+    local success, err = pcall(function ()
       i = i or 1
       local go = i < #handlers
         and function ()
@@ -194,11 +194,12 @@ local function handleRequest(head, input)
         end
         or function () end
       return handlers[i](req, res, go)
-    end, debug.traceback)
+    end)
     if not success then
       res.code = 500
       res.headers = setmetatable({}, headerMeta)
       res.body = err
+      print(err)
     end
   end
   run(1)

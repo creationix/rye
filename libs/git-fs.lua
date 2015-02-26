@@ -29,6 +29,7 @@ local git = require('git')
 local miniz = require('miniz')
 local openssl = require('openssl')
 local hexBin = require('hex-bin')
+local uv = require('uv')
 
 local numToType = {
   [1] = "commit",
@@ -115,6 +116,7 @@ end
 
 local function readUint32(buffer, offset)
   offset = offset or 0
+  assert(#buffer >= offset + 4, "not enough buffer")
   return bit.bor(
     bit.lshift(buffer:byte(offset + 1), 24),
     bit.lshift(buffer:byte(offset + 2), 16),
@@ -125,6 +127,7 @@ end
 
 local function readUint64(buffer, offset)
   offset = offset or 0
+  assert(#buffer >= offset + 8, "not enough buffer")
   local hi, lo =
   bit.bor(
     bit.lshift(buffer:byte(offset + 1), 24),
@@ -179,53 +182,98 @@ return function (storage)
 ]]))
   end
 
-  function db.has(hash)
-    assertHash(hash)
-    return storage.read(hashPath(hash)) and true or false
-  end
+  local packs = {}
+  local function makePack(packHash)
+    local pack = packs[packHash]
+    if pack then return pack end
+    pack = {}
+    packs[packHash] = pack
 
-  local function findHash(indexHash, hash) --> offset
-    local fd = assert(fs.open("objects/pack/pack-" .. indexHash .. ".idx"))
-    local success, result = xpcall(function ()
-      assert(fs.read(fd, 8, 0) == '\255tOc\0\0\0\2', "Only pack index v2 supported")
-      local length = readUint32((fs.read(fd, 4, 8 + 255 * 4)))
+    local timer, indexFd, packFd, indexLength
+    local hashOffset, crcOffset, lengthOffset, largeOffset
+
+    local function close()
+      p("close", packHash, tostring(pack))
+      if pack then
+        if packs[packHash] == pack then
+          packs[packHash] = nil
+        end
+        pack = nil
+      end
+      if timer then
+        timer:stop()
+        timer:close()
+        timer = nil
+      end
+      if indexFd then
+        fs.close(indexFd)
+        indexFd = nil
+      end
+      if packFd then
+        fs.close(packFd)
+        packFd = nil
+      end
+    end
+
+    local function timeout()
+      p("timeout", packHash, tostring(pack))
+      coroutine.wrap(close)()
+    end
+
+    local function open()
+      if timer then
+        -- p("Update", packHash, tostring(pack))
+        timer:stop()
+        timer:start(2000, 0, timeout)
+        return
+      end
+
+      timer = uv.new_timer()
+      timer:start(2000, 0, timeout)
+
+      p("Open", packHash, tostring(pack))
+      if not indexFd then
+        indexFd = assert(fs.open("objects/pack/pack-" .. packHash .. ".idx"))
+        assert(fs.read(indexFd, 8, 0) == '\255tOc\0\0\0\2', 'Only pack index v2 supported')
+        indexLength = readUint32(assert(fs.read(indexFd, 4, 8 + 255 * 4)))
+        hashOffset = 8 + 255 * 4 + 4
+        crcOffset = hashOffset + 20 * indexLength
+        lengthOffset = crcOffset + 4 * indexLength
+        largeOffset = lengthOffset + 4 * indexLength
+      end
+
+      if not packFd then
+        packFd = assert(fs.open("objects/pack/pack-" .. packHash .. ".pack"))
+        assert(fs.read(packFd, 8, 0) == "PACK\0\0\0\2", "Only v2 pack files supported")
+      end
+
+    end
+
+    local function loadHash(hash) --> offset
 
       -- Read first fan-out table to get index into offset table
       local prefix = hexToBin(hash:sub(1, 2)):byte(1)
-      local first = prefix == 0 and 0 or readUint32((fs.read(fd, 4, 8 + (prefix - 1) * 4)))
-      local last = readUint32((fs.read(fd, 4, 8 + prefix * 4)))
+      local first = prefix == 0 and 0 or readUint32(assert(fs.read(indexFd, 4, 8 + (prefix - 1) * 4)))
+      local last = readUint32(assert(fs.read(indexFd, 4, 8 + prefix * 4)))
 
-      local hashOffset = 8 + 255 * 4 + 4
-      local crcOffset = hashOffset + 20 * length
-      local lengthOffset = crcOffset + 4 * length
-      local largeOffset = lengthOffset + 4 * length
       for index = first, last do
         local start = hashOffset + index * 20
-        local foundHash = binToHex(fs.read(fd, 20, start))
+        local foundHash = binToHex(assert(fs.read(indexFd, 20, start)))
         if foundHash == hash then
-          local offset = readUint32(fs.read(fd, 4, lengthOffset + index * 4))
+          local offset = readUint32(assert(fs.read(indexFd, 4, lengthOffset + index * 4)))
           if bit.band(offset, 0x80000000) > 0 then
             offset = largeOffset + bit.band(offset, 0x7fffffff) * 8;
-            offset = readUint64(fs.read(fd, 8, offset))
+            offset = readUint64(assert(fs.read(indexFd, 8, offset)))
           end
           return offset
         end
       end
+    end
 
-    end, debug.traceback)
-    fs.close(fd)
-    if success then return result end
-    error(result)
-  end
-
-  local function loadPack(packHash, offset)
-    local fd = assert(fs.open("objects/pack/pack-" .. packHash .. ".pack"))
-    local success, kind, raw = xpcall(function ()
-      assert(fs.read(fd, 8, 0) == "PACK\0\0\0\2", "Only v2 pack files supported")
-
+    local function loadRaw(offset) -->raw
       -- Shouldn't need more than 32 bytes to read variable length header and
       -- optional hash or offset
-      local chunk = fs.read(fd, 32, offset)
+      local chunk = assert(fs.read(packFd, 32, offset))
       local byte = chunk:byte(1)
 
       -- Parse out the git type
@@ -260,29 +308,52 @@ return function (storage)
 
       -- We don't know the size of the compressed data, so we guess uncompressed
       -- size + 32, extra data will be ignored
-      local compressed = fs.read(fd, size + 32, offset + i - 1)
+      local compressed = assert(fs.read(packFd, size * 2 + 64, offset + i - 1))
       local raw = inflate(compressed, 1)
 
-      assert(#raw == size, "inflate error or size mismatch")
+      if #raw ~= size then
+        p(compressed, raw)
+      end
+      assert(#raw == size, "inflate error or size mismatch at offset " .. offset)
 
       if kind == "ref-delta" then
         error("TODO: handle ref-delta")
       elseif kind == "ofs-delta" then
         local base
-        kind, base = loadPack(packHash, offset - ref)
+        kind, base = loadRaw(offset - ref)
         raw = applyDelta(base, raw)
       end
       return kind, raw
-    end, debug.traceback)
-    fs.close(fd)
-    if success then return kind, raw end
-    error(kind)
+    end
+
+    function pack.load(hash) --> raw
+      if not pack then
+        p("Upgrade", packHash, tostring(pack))
+        return makePack(packHash).load(hash)
+      end
+      local success, result = pcall(function ()
+        open()
+        local offset = loadHash(hash)
+        if not offset then return end
+        local kind, raw = loadRaw(offset)
+        return frame(kind, raw)
+      end)
+      if success then return result end
+      -- close()
+      error(result)
+    end
+
+    return pack
+  end
+
+  function db.has(hash)
+    assertHash(hash)
+    return storage.read(hashPath(hash)) and true or false
   end
 
   local function loadHash(packHash, hash)
-    local offset, err = findHash(packHash, hash)
-    if not offset then return nil, err end
-    return frame(loadPack(packHash, offset))
+    local pack = makePack(packHash)
+    return pack.load(hash)
   end
 
   function db.load(hash)
