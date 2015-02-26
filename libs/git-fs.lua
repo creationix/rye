@@ -128,20 +128,15 @@ end
 local function readUint64(buffer, offset)
   offset = offset or 0
   assert(#buffer >= offset + 8, "not enough buffer")
-  local hi, lo =
-  bit.bor(
-    bit.lshift(buffer:byte(offset + 1), 24),
-    bit.lshift(buffer:byte(offset + 2), 16),
-    bit.lshift(buffer:byte(offset + 3), 8),
-    buffer:byte(offset + 4)
-  ),
-  bit.bor(
-    bit.lshift(buffer:byte(offset + 5), 24),
-    bit.lshift(buffer:byte(offset + 6), 16),
-    bit.lshift(buffer:byte(offset + 7), 8),
+  return
+    (bit.lshift(buffer:byte(offset + 1), 24) +
+    bit.lshift(buffer:byte(offset + 2), 16) +
+    bit.lshift(buffer:byte(offset + 3), 8) +
+    buffer:byte(offset + 4)) * 0x100000000 +
+    bit.lshift(buffer:byte(offset + 5), 24) +
+    bit.lshift(buffer:byte(offset + 6), 16) +
+    bit.lshift(buffer:byte(offset + 7), 8) +
     buffer:byte(offset + 8)
-  )
-  return hi * 0x100000000 + lo;
 end
 
 local function assertHash(hash)
@@ -190,10 +185,11 @@ return function (storage)
     packs[packHash] = pack
 
     local timer, indexFd, packFd, indexLength
-    local hashOffset, crcOffset, lengthOffset, largeOffset
+    local hashOffset, crcOffset
+    local offsets, lengths, packSize
 
     local function close()
-      p("close", packHash, tostring(pack))
+      p("Close", packHash)
       if pack then
         if packs[packHash] == pack then
           packs[packHash] = nil
@@ -216,37 +212,53 @@ return function (storage)
     end
 
     local function timeout()
-      p("timeout", packHash, tostring(pack))
       coroutine.wrap(close)()
     end
 
-    local function open()
-      if timer then
-        -- p("Update", packHash, tostring(pack))
-        timer:stop()
-        timer:start(2000, 0, timeout)
-        return
+
+    timer = uv.new_timer()
+    uv.unref(timer)
+    timer:start(2000, 2000, timeout)
+
+    p("Open", packHash)
+
+    packFd = assert(fs.open("objects/pack/pack-" .. packHash .. ".pack"))
+    local stat = assert(fs.fstat(packFd))
+    packSize = stat.size
+    assert(fs.read(packFd, 8, 0) == "PACK\0\0\0\2", "Only v2 pack files supported")
+
+    indexFd = assert(fs.open("objects/pack/pack-" .. packHash .. ".idx"))
+    assert(fs.read(indexFd, 8, 0) == '\255tOc\0\0\0\2', 'Only pack index v2 supported')
+    indexLength = readUint32(assert(fs.read(indexFd, 4, 8 + 255 * 4)))
+    hashOffset = 8 + 255 * 4 + 4
+    crcOffset = hashOffset + 20 * indexLength
+    local lengthOffset = crcOffset + 4 * indexLength
+    local largeOffset = lengthOffset + 4 * indexLength
+    offsets = {}
+    lengths = {}
+    local sorted = {}
+    local data = assert(fs.read(indexFd, 4 * indexLength, lengthOffset))
+    for i = 1, indexLength do
+      local offset = readUint32(data, (i - 1) * 4)
+      if bit.band(offset, 0x80000000) > 0 then
+        error("TODO: Implement large offsets properly")
+        offset = largeOffset + bit.band(offset, 0x7fffffff) * 8;
+        offset = readUint64(assert(fs.read(indexFd, 8, offset)))
       end
-
-      timer = uv.new_timer()
-      timer:start(2000, 0, timeout)
-
-      p("Open", packHash, tostring(pack))
-      if not indexFd then
-        indexFd = assert(fs.open("objects/pack/pack-" .. packHash .. ".idx"))
-        assert(fs.read(indexFd, 8, 0) == '\255tOc\0\0\0\2', 'Only pack index v2 supported')
-        indexLength = readUint32(assert(fs.read(indexFd, 4, 8 + 255 * 4)))
-        hashOffset = 8 + 255 * 4 + 4
-        crcOffset = hashOffset + 20 * indexLength
-        lengthOffset = crcOffset + 4 * indexLength
-        largeOffset = lengthOffset + 4 * indexLength
+      offsets[i] = offset
+      sorted[i] = offset
+    end
+    table.sort(sorted)
+    for i = 1, indexLength do
+      local offset = offsets[i]
+      local length
+      for j = 1, indexLength - 1 do
+        if sorted[j] == offset then
+          length = sorted[j + 1] - offset
+          break
+        end
       end
-
-      if not packFd then
-        packFd = assert(fs.open("objects/pack/pack-" .. packHash .. ".pack"))
-        assert(fs.read(packFd, 8, 0) == "PACK\0\0\0\2", "Only v2 pack files supported")
-      end
-
+      lengths[i] = length or (packSize - offset - 20)
     end
 
     local function loadHash(hash) --> offset
@@ -260,17 +272,13 @@ return function (storage)
         local start = hashOffset + index * 20
         local foundHash = binToHex(assert(fs.read(indexFd, 20, start)))
         if foundHash == hash then
-          local offset = readUint32(assert(fs.read(indexFd, 4, lengthOffset + index * 4)))
-          if bit.band(offset, 0x80000000) > 0 then
-            offset = largeOffset + bit.band(offset, 0x7fffffff) * 8;
-            offset = readUint64(assert(fs.read(indexFd, 8, offset)))
-          end
-          return offset
+          index = index + 1
+          return offsets[index], lengths[index]
         end
       end
     end
 
-    local function loadRaw(offset) -->raw
+    local function loadRaw(offset, length) -->raw
       -- Shouldn't need more than 32 bytes to read variable length header and
       -- optional hash or offset
       local chunk = assert(fs.read(packFd, 32, offset))
@@ -306,14 +314,9 @@ return function (storage)
         end
       end
 
-      -- We don't know the size of the compressed data, so we guess uncompressed
-      -- size + 32, extra data will be ignored
-      local compressed = assert(fs.read(packFd, size * 2 + 64, offset + i - 1))
+      local compressed = assert(fs.read(packFd, length, offset + i - 1))
       local raw = inflate(compressed, 1)
 
-      if #raw ~= size then
-        p(compressed, raw)
-      end
       assert(#raw == size, "inflate error or size mismatch at offset " .. offset)
 
       if kind == "ref-delta" then
@@ -328,14 +331,13 @@ return function (storage)
 
     function pack.load(hash) --> raw
       if not pack then
-        p("Upgrade", packHash, tostring(pack))
         return makePack(packHash).load(hash)
       end
+      timer:again()
       local success, result = pcall(function ()
-        open()
-        local offset = loadHash(hash)
+        local offset, length = loadHash(hash)
         if not offset then return end
-        local kind, raw = loadRaw(offset)
+        local kind, raw = loadRaw(offset, length)
         return frame(kind, raw)
       end)
       if success then return result end
