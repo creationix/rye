@@ -29,8 +29,10 @@ require('web-app')
   -- Set an outer middleware for logging requests and responses
   .use(require('logger'))
 
+  -- This adds missing headers, and tries to do automatic cleanup.
   .use(require('auto-headers'))
 
+  -- A caching proxy layer for backends supporting Etags
   .use(require('etag-cache'))
 
   .route({ method="GET", path="/" }, function (req, res, go)
