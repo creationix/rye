@@ -180,9 +180,15 @@ return function (storage)
   local packs = {}
   local function makePack(packHash)
     local pack = packs[packHash]
-    if pack then return pack end
-    pack = {}
-    packs[packHash] = pack
+    if pack then
+      if pack.waiting then
+        pack.waiting[#pack.waiting + 1] = coroutine.running()
+        return coroutine.yield()
+      end
+      return pack
+    end
+    local waiting = {}
+    pack = { waiting=waiting }
 
     local timer, indexFd, packFd, indexLength
     local hashOffset, crcOffset
@@ -190,6 +196,7 @@ return function (storage)
 
     local function close()
       if pack then
+        pack.waiting = nil
         if packs[packHash] == pack then
           packs[packHash] = nil
         end
@@ -342,17 +349,18 @@ return function (storage)
       error(result)
     end
 
+    packs[packHash] = pack
+    pack.waiting = nil
+    for i = 1, #waiting do
+      assert(coroutine.resume(waiting[i], pack))
+    end
+
     return pack
   end
 
   function db.has(hash)
     assertHash(hash)
     return storage.read(hashPath(hash)) and true or false
-  end
-
-  local function loadHash(packHash, hash)
-    local pack = makePack(packHash)
-    return pack.load(hash)
   end
 
   function db.load(hash)
@@ -364,7 +372,7 @@ return function (storage)
         local packHash = file:match("^pack%-(%x+)%.idx$")
         if packHash then
           local raw
-          raw, err = loadHash(packHash, hash)
+          raw, err = makePack(packHash).load(hash)
           if raw then return raw end
         end
       end
