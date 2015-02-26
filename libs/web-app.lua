@@ -28,7 +28,7 @@ Response automatic values:
  - Auto Server header
  - Auto Date Header
  - code defaults to 404 with body "Not Found\n"
- - if there is a string body add Content-Length and Etag if missing
+ - if there is a string body add Content-Length and ETag if missing
  - if string body and no Content-Type, use text/plain for valid utf-8, application/octet-stream otherwise
  - Auto add "; charset=utf-8" to Content-Type when body is known to be valid utf-8
  - Auto 304 responses for if-none-match requests
@@ -252,7 +252,7 @@ local function handleRequest(head, input)
     end
   end
 
-  local etag = res.headers["if-none-match"]
+  local etag = req.headers["if-none-match"]
   if etag and res.code >= 200 and res.code < 300 and etag == lowerHeaders.etag then
     res.code = 304
     body = nil
