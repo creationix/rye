@@ -12,7 +12,7 @@ return function (db, ref)
     local path = req.params.path or req.path
     local fullPath = commitHash .. ":" .. path
     local etag = '"dir-' .. digest("sha1", fullPath) .. '"'
-    if etag == req.headers["if-none-match"] then
+    if etag == req.headers["If-None-Match"] then
       res.code = 304
       res.headers.ETag = etag
       return
@@ -51,13 +51,13 @@ return function (db, ref)
         end
         res.code = 200
         res.headers["Content-Type"] = "application/json"
-        res.headers.Etag = etag
+        res.headers.ETag = etag
         res.body = JSON.stringify(value) .. "\n"
         return
       elseif kind == "blob" then
         res.code = 200
         res.headers["Content-Type"] = getType(path)
-        res.headers.Etag = etag
+        res.headers.ETag = etag
         res.body = value
         return
       else

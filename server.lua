@@ -27,12 +27,11 @@ require('web-app')
   .bind({host="0.0.0.0", port=8080})
 
   -- Set an outer middleware for logging requests and responses
-  .use(function (req, res, go)
-    -- Run all inner layers first.
-    go()
-    -- And then log after everything is done
-    print(string.format("%s %s %s", req.method,  req.path, res.code))
-  end)
+  .use(require('logger'))
+
+  .use(require('auto-headers'))
+
+  .use(require('etag-cache'))
 
   .route({ method="GET", path="/" }, function (req, res, go)
     -- Render a dynamic welcome page for clients with a user-agent
