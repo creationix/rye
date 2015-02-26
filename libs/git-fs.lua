@@ -189,7 +189,6 @@ return function (storage)
     local offsets, lengths, packSize
 
     local function close()
-      p("Close", packHash)
       if pack then
         if packs[packHash] == pack then
           packs[packHash] = nil
@@ -219,8 +218,6 @@ return function (storage)
     timer = uv.new_timer()
     uv.unref(timer)
     timer:start(2000, 2000, timeout)
-
-    p("Open", packHash)
 
     packFd = assert(fs.open("objects/pack/pack-" .. packHash .. ".pack"))
     local stat = assert(fs.fstat(packFd))
