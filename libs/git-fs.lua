@@ -1,7 +1,7 @@
 exports.name = "creationix/git-fs"
 exports.version = "0.1.0"
 exports.dependencies = {
-  "creationix/git@0.1.0",
+  "creationix/git@0.1.1",
   "creationix/hex-bin@1.0.0",
 }
 
