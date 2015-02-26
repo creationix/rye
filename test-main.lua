@@ -7,6 +7,7 @@ coroutine.wrap(function ()
   local fs = require('coro-fs')
   local storage = require('storage-fs')(fs.chroot('sites.git'))
   local db = require('git-fs')(storage)
+  require('git-hash-cache')(db, 100000)
 
   local modes = require('git').modes
 
