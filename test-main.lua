@@ -7,7 +7,7 @@ coroutine.wrap(function ()
   local fs = require('coro-fs')
   local storage = require('storage-fs')(fs.chroot('sites.git'))
   local db = require('git-fs')(storage)
-  require('git-hash-cache')(db, 100000)
+  require('git-hash-cache')(db, 200000, 2000000)
 
   local modes = require('git').modes
 
@@ -24,9 +24,9 @@ coroutine.wrap(function ()
   end
 
   local function walkCommit(hash)
-    print("commit", hash)
+    -- print("commit", hash)
     local commit = db.loadAs("commit", hash)
-    print(commit.message)
+    -- print(commit.message)
     walkTree(commit.tree)
     for i = 1, #commit.parents do
       walkCommit(commit.parents[i])

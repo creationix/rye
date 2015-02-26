@@ -10,9 +10,9 @@ local bundle = require('luvi').bundle
 local fs = require('coro-fs')
 local storage = require('storage-fs')(fs.chroot('sites.git'))
 local db = require('git-fs')(storage)
--- Add an in-memory cache for all git objects under 100k
-require('git-hash-cache')(db, 100000)
-
+-- Add an in-memory cache for all git objects under 200k with a total
+-- max cache size of 2mb
+require('git-hash-cache')(db, 200000, 2000000)
 
 -- Create three instances of the gitServe app using different refs in our
 -- local git repo.  A cron job or post commit hook will `git fetch ...` these
