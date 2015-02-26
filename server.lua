@@ -14,6 +14,9 @@ local db = require('git-fs')(storage)
 -- max cache size of 2mb
 require('git-hash-cache')(db, 200000, 2000000)
 
+-- Cache all ref lookups for 1000ms
+require('git-ref-cache')(db, 1000)
+
 -- Create three instances of the gitServe app using different refs in our
 -- local git repo.  A cron job or post commit hook will `git fetch ...` these
 -- to keep the database up to date. Eventually rye can poll for updates on a
