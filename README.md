@@ -7,7 +7,7 @@ So far it can render static sites directly from git repos on disk.
 
 ## Test it out!
 
- 1. Clone this repo. ``
+ 1. Clone this repo.
  2. Run the setup script.
  3. [Install lit](https://github.com/luvit/lit#installing-lit).
  4. Install deps using lit.
